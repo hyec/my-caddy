@@ -5,3 +5,4 @@
 # github.com/caddy-dns/cloudflare
 # github.com/caddy-dns/cloudflare@v0.2.1
 github.com/caddy-dns/cloudflare
+github.com/greenpau/caddy-security
