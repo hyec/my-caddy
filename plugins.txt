@@ -1,0 +1,7 @@
+# One xcaddy module per line.
+# Blank lines and comments are ignored.
+#
+# Examples:
+# github.com/caddy-dns/cloudflare
+# github.com/caddy-dns/cloudflare@v0.2.1
+github.com/caddy-dns/cloudflare

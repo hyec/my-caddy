@@ -1,0 +1,117 @@
+name: Build custom Caddy
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: custom-caddy-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve Caddy and plugin versions
+        id: versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/resolve-versions.sh
+
+      - name: Prepare image metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          caddy_version="${{ steps.versions.outputs.caddy_version }}"
+          plugin_sha_short="${{ steps.versions.outputs.plugins_sha_short }}"
+
+          {
+            echo "image=${image}"
+            echo "tag_latest=${image}:latest"
+            echo "tag_caddy=${image}:caddy-${caddy_version}"
+            echo "tag_fingerprint=${image}:caddy-${caddy_version}-plugins-${plugin_sha_short}"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Inspect current latest image
+        id: current
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${{ steps.meta.outputs.image }}"
+
+          current_caddy=""
+          current_plugins_sha=""
+
+          if docker pull --platform linux/amd64 "${image}:latest" >/dev/null 2>&1; then
+            current_caddy=$(docker image inspect "${image}:latest" --format '{{ index .Config.Labels "io.github.my-caddy.caddy.version" }}' 2>/dev/null || true)
+            current_plugins_sha=$(docker image inspect "${image}:latest" --format '{{ index .Config.Labels "io.github.my-caddy.plugins.sha256" }}' 2>/dev/null || true)
+          fi
+
+          [[ "$current_caddy" == "<no value>" ]] && current_caddy=""
+          [[ "$current_plugins_sha" == "<no value>" ]] && current_plugins_sha=""
+
+          {
+            echo "caddy_version=${current_caddy}"
+            echo "plugins_sha256=${current_plugins_sha}"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Decide whether to build
+        id: decision
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          desired_caddy="${{ steps.versions.outputs.caddy_version }}"
+          desired_plugins_sha="${{ steps.versions.outputs.plugins_sha256 }}"
+          current_caddy="${{ steps.current.outputs.caddy_version }}"
+          current_plugins_sha="${{ steps.current.outputs.plugins_sha256 }}"
+
+          if [[ "$desired_caddy" != "$current_caddy" || "$desired_plugins_sha" != "$current_plugins_sha" ]]; then
+            echo "build=true" >>"$GITHUB_OUTPUT"
+            echo "Publishing ${desired_caddy} with plugins ${desired_plugins_sha}"
+          else
+            echo "build=false" >>"$GITHUB_OUTPUT"
+            echo "latest already contains ${desired_caddy} with plugins ${desired_plugins_sha}"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.decision.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        if: steps.decision.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.tag_latest }}
+            ${{ steps.meta.outputs.tag_caddy }}
+            ${{ steps.meta.outputs.tag_fingerprint }}
+          build-args: |
+            CADDY_VERSION=${{ steps.versions.outputs.caddy_version }}
+            CADDY_DOCKER_VERSION=${{ steps.versions.outputs.caddy_docker_version }}
+            XCADDY_ARGS=${{ steps.versions.outputs.xcaddy_args }}
+            PLUGINS_JSON=${{ steps.versions.outputs.plugins_json }}
+            PLUGINS_SHA256=${{ steps.versions.outputs.plugins_sha256 }}
+            IMAGE_VERSION=${{ steps.versions.outputs.image_version }}
+            SOURCE_URL=https://github.com/${{ github.repository }}
